@@ -1,0 +1,344 @@
+---
+title: "COVID Analysis - Overall Mortality"
+output: html_notebook
+---
+
+Load required libraries
+
+```{r}
+library(tidyverse)
+library(ggthemes)
+library(reshape2)
+library(scales)
+
+```
+
+Load up initial Data
+
+```{r}
+Calendar <- read_csv("Calendar.csv", 
+  col_types = cols(
+    Date = col_date(format = "%Y-%m-%d"), 
+    Year = col_character(), 
+    Month = col_integer(),
+    `ISO Week` = col_integer(), 
+    `Week Starting` = col_date(format = "%Y-%m-%d")
+    )
+  )
+
+mortality_by_age_sex_week <- read_csv("Provisional_COVID-19_Deaths_by_Week__Sex__and_Age.csv",
+  col_types = cols(
+    `MMWR Week` = col_integer(),
+    `End Week` = col_date(format = "%m/%d/%Y"),
+    `Total Deaths` = col_integer(),
+    `COVID-19 Deaths` = col_integer()
+  )
+)
+
+```
+
+Set up global data
+
+```{r}
+
+mortality_df <- inner_join(mortality_by_age_sex_week, Calendar, by = c("End Week" = "Date"))
+
+mortality_df <- mortality_df %>% filter(`Age Group` != "All Ages" & `Sex` == "All Sex")
+
+mortality_df$`Age Group Category` <- "3. Adults (25-54)"
+mortality_df$`Age Group Category`[mortality_df$`Age Group` %in% c("Under 1 year", "1-4 Years") ] <- "1. Infants/Toddlers (<5)"
+mortality_df$`Age Group Category`[mortality_df$`Age Group` %in% c("5-14 Years", "14-24 Years") ] <- "2. Adolescents/YA (5-24)"
+mortality_df$`Age Group Category`[mortality_df$`Age Group` %in% c("55-64 Years", "65-74 Years", "75-84 Years", "85 Years and Over") ] <- "4. Seniors (55+)"
+
+
+```
+
+Generate stats by high-level age category and ratios comparing against total COVID and all-cause deaths for the given weekly time range.
+
+```{r}
+
+
+mortality_df_weekly_total =  (mortality_df %>% 
+                      group_by(`Week Starting`) %>%
+                        summarize(
+                          total_deaths_for_week = sum(replace_na(`Total Deaths`, 0)),
+                          total_covid_deaths_for_week = sum(replace_na(`COVID-19 Deaths`,0))
+                        )
+                  )
+
+mortality_df <- inner_join(mortality_df, mortality_df_weekly_total, by = c("Week Starting" = "Week Starting"))
+
+mortality_df_weekly_total_age_group_category =  (mortality_df %>% 
+                      group_by(`Age Group Category`, `Week Starting`) %>%
+                        summarize(
+                          total_covid_deaths_by_agc = sum(replace_na(`COVID-19 Deaths`,0)),
+                          total_all_cause_deaths_by_agc = sum(replace_na(`Total Deaths`,0)),
+                          total_all_non_covid_deaths_by_agc = total_all_cause_deaths_by_agc - total_covid_deaths_by_agc
+                        )
+                  )
+
+mortality_df_yearly_total_age_group_category = (mortality_df %>% 
+                      group_by(`Age Group Category`, `Year`) %>%
+                        summarize(
+                          total_covid_deaths = sum(replace_na(`COVID-19 Deaths`,0)),
+                          total_all_cause_deaths = sum(replace_na(`Total Deaths`,0)),
+                          covid_all_deaths_ratio = total_covid_deaths / total_all_cause_deaths,
+                          covid_all_deaths_pct = round(covid_all_deaths_ratio * 100, digits = 2)
+                        )
+                  )
+
+mortality_summary_df <- inner_join(mortality_df_weekly_total_age_group_category, 
+                                   mortality_df_weekly_total, 
+                                   by = c("Week Starting" = "Week Starting"))
+
+mortality_summary_df$covid_all_deaths_ratio <- replace_na(
+  mortality_summary_df$total_covid_deaths_by_agc / mortality_summary_df$total_all_cause_deaths_by_agc, 0)
+mortality_summary_df$covid_all_deaths_pct <- mortality_summary_df$covid_all_deaths_ratio * 100
+
+mortality_summary_df$covid_deaths_ratio <- replace_na(
+  mortality_summary_df$total_covid_deaths_by_agc / mortality_summary_df$total_covid_deaths_for_week, 0)
+mortality_summary_df$covid_deaths_pct <- mortality_summary_df$covid_deaths_ratio * 100
+
+
+```
+
+Let's filter out insignificant categories (if desired).
+
+```{r}
+
+df_filtered <- mortality_summary_df 
+
+```
+
+Let's look at deaths per week by age group category. Notice very high senior (55+) mortality compared to other groups.
+
+```{r}
+
+p <- ggplot(df_filtered,
+              mapping = aes(x=`Week Starting`,
+                            y=total_covid_deaths_by_agc,
+                            color=`Age Group Category`))
+
+p <- p + geom_line(aes(color = `Age Group Category`), size = 1.1)
+
+p <- p + labs(title = "COVID-19 Mortality By Age Group", 
+              x = "Week Starting", 
+              y = "No. of Deaths",
+              color = "Age Group")
+p <- p + scale_x_date(date_breaks = "12 weeks",
+                      date_labels = "%Y-%m-%d")
+
+p <- p + scale_y_continuous(label=comma)
+
+p <- p + theme_gdocs(base_size = 10, base_family = "serif")
+p <- p + theme(axis.text.x=element_text(angle=90))
+p
+
+```
+Now let's look at it on log scale just to see where the below 24 crowd is.
+
+```{r}
+
+p <- ggplot(df_filtered, 
+              mapping = aes(x=`Week Starting`, 
+                            y=total_covid_deaths_by_agc, 
+                            color=`Age Group Category`)) 
+
+p <- p + geom_line(aes(color = `Age Group Category`), size = 1.1)
+
+p <- p + labs(title = "COVID-19 Mortality By Age Group (Logarithmic)", 
+              x = "Week Starting", 
+              y = "No. of Deaths",
+              color = "Age Group")
+p <- p + scale_x_date(date_breaks = "12 weeks",
+                      date_labels = "%Y-%m-%d")
+
+p <- p + scale_y_log10(label=comma)
+
+p <- p + theme_gdocs(base_size = 10, base_family = "serif")
+p <- p + theme(axis.text.x=element_text(angle=90))
+p
+```
+
+
+
+```{r}
+
+p <- ggplot(mortality_df_yearly_total_age_group_category, 
+              mapping = aes(x=`Age Group Category`, 
+                            y=total_covid_deaths, 
+                            fill=`Year`,
+                            label=total_covid_deaths)) 
+
+p <- p + geom_col(position="dodge")
+p <- p + geom_label(aes(label=scales::comma(total_covid_deaths)), vjust=0, size=3, family="serif", position=position_dodge(width=.9))
+
+p <- p + labs(title = "COVID-19 Mortality By Age Group & Year", 
+              x = "Age Group", 
+              y = "No. of Deaths")
+
+p <- p + scale_y_continuous(label=comma)
+p <- p + scale_fill_manual(values = c("yellow", "pink", "lightblue"))
+
+p <- p + theme_gdocs(base_size = 10, base_family = "serif")
+p
+
+
+```
+
+
+```{r}
+
+p <- ggplot(mortality_df_yearly_total_age_group_category, 
+              mapping = aes(x=`Age Group Category`, 
+                            y=total_covid_deaths, 
+                            fill=`Age Group Category`,
+                            label=total_covid_deaths)) 
+
+p <- p + geom_col(position="dodge")
+p <- p + geom_text(aes(label=scales::comma(total_covid_deaths)), vjust=0, size=3, family="serif", position=position_dodge(width=.9))
+
+p <- p + labs(title = "COVID-19 Mortality By Age Group", 
+              y = "No. of Deaths",
+              x = "Age Group")
+
+p <- p + scale_y_continuous(label=comma)
+p <- p + facet_wrap(Year~.)
+p <- p + theme_gdocs(base_size = 10, base_family = "serif")
+p <- p + theme(axis.text.x=element_text(angle=90))
+p
+
+
+```
+Let's look at each age group and see what percentage of all deaths are Covid.
+
+```{r}
+
+p <- ggplot(df_filtered,
+              mapping = aes(x=`Week Starting`,
+                            y=covid_all_deaths_ratio,
+                            color=`Age Group Category`))
+p <- p + geom_line(aes(color = `Age Group Category`), size = 1.1)
+
+p <- p + labs(title = "COVID-19 Mortality as Ratio of All-Cause Mortality By Age Group", 
+              x = "Week Starting", 
+              y = "Percentage of All-Cause Mortality",
+              color = "Age Group")
+
+p <- p + scale_x_date(date_breaks = "12 weeks",
+                      date_labels = "%Y-%m-%d")
+
+p <- p + scale_y_continuous(labels = function(x) paste0(x*100, "%"))
+
+p <- p + theme_gdocs(base_size = 10, base_family = "serif")
+p <- p + theme(axis.text.x=element_text(angle=90))
+p
+
+```
+```{r}
+
+p <- ggplot(mortality_df_yearly_total_age_group_category, 
+              mapping = aes(x=`Age Group Category`, 
+                            y=covid_all_deaths_ratio, 
+                            fill=`Year`,
+                            label=covid_all_deaths_pct)) 
+
+p <- p + geom_col(position="dodge")
+p <- p + geom_label(vjust=0, size=3, family="serif", position=position_dodge(width=.9))
+
+p <- p + labs(title = "COVID-19 Mortality as Ratio of All-Cause Mortality By Age Group", 
+              x = "Age Group", 
+              y = "Percentage of All-Cause Mortality")
+
+p <- p + scale_y_continuous(labels = function(x) paste0(x*100, "%"))
+p <- p + scale_fill_manual(values = c("yellow", "pink", "lightblue"))
+
+p <- p + theme_gdocs(base_size = 10, base_family = "serif")
+p
+
+
+```
+
+```{r}
+
+p <- ggplot(mortality_df_yearly_total_age_group_category, 
+              mapping = aes(x=`Age Group Category`, 
+                            y=covid_all_deaths_ratio, 
+                            fill=`Age Group Category`,
+                            label=covid_all_deaths_pct)) 
+
+p <- p + geom_col(position="dodge")
+p <- p + geom_text(vjust=0, size=3, family="serif", position=position_dodge(width=.9))
+
+p <- p + labs(title = "COVID-19 Mortality as Ratio of All-Cause Mortality By Age Group", 
+              y = "Percentage of All-Cause Mortality",
+              x = "Age Group")
+
+p <- p + scale_y_continuous(labels = function(x) paste0(x*100, "%"))
+p <- p + facet_wrap(Year~.)
+
+
+p <- p + theme_gdocs(base_size = 10, base_family = "serif")
+p
+
+
+```
+
+Let's compare Age Group all-cause mortality by week with their Covid-specific mortality.
+
+```{r}
+
+show_weekly_covid_vs_all_cause_mortality <- function (age_category_group) {
+
+  target_agc = filter(df_filtered, `Age Group Category` == age_category_group)
+  
+  target_agc.melted = melt(target_agc, id = "Week Starting")
+  target_agc.melted = filter(target_agc.melted, 
+                                variable %in% c("total_covid_deaths_by_agc", 
+                                                "total_all_cause_deaths_by_agc", 
+                                                "total_all_non_covid_deaths_by_agc"))
+  target_agc.melted$value = as.numeric(target_agc.melted$value)
+  target_agc.melted$variable = as.character(target_agc.melted$variable)
+  
+  target_agc.melted$variable[target_agc.melted$variable == "total_covid_deaths_by_agc"] <- "Covid Deaths"
+  target_agc.melted$variable[target_agc.melted$variable == "total_all_cause_deaths_by_agc"] <- "All Deaths"
+  target_agc.melted$variable[target_agc.melted$variable == "total_all_non_covid_deaths_by_agc"] <- "Non-Covid Deaths"
+  
+  p <- ggplot(target_agc.melted, 
+                mapping = aes(x=`Week Starting`, 
+                              y=value, 
+                              color = variable, 
+                              fill = variable
+                          )
+              ) 
+  p <- p + geom_line(size = 1.1)
+  p <- p + labs(title = paste("COVID-19 vs. All-Cause Deaths:", age_category_group), 
+                x = "Week Starting", 
+                y = "No. of Deaths",
+                color = "Legend",
+                fill = "Legend"
+                
+          )
+  p <- p + scale_x_date(date_breaks = "12 weeks",
+                        date_labels = "%Y-%m-%d")
+  p <- p + scale_y_continuous(label=comma)
+  p <- p + scale_fill_manual(values = c("lightblue", "red", "lightgreen"))
+  p <- p + scale_color_manual(values = c("lightblue", "red", "lightgreen"))
+  p <- p + theme_gdocs(base_size = 11, base_family = "serif")
+  p <- p + theme(axis.text.x=element_text(angle=90))
+  
+  relation = lm(target_agc$total_all_cause_deaths_by_agc ~ target_agc$total_covid_deaths_by_agc)
+  print(age_category_group)
+  print(summary(relation))
+  
+  return(p)
+  
+}
+
+show_weekly_covid_vs_all_cause_mortality("1. Infants/Toddlers (<5)")
+show_weekly_covid_vs_all_cause_mortality("2. Adolescents/YA (5-24)")
+show_weekly_covid_vs_all_cause_mortality("3. Adults (25-54)")
+show_weekly_covid_vs_all_cause_mortality("4. Seniors (55+)")
+
+```
+
